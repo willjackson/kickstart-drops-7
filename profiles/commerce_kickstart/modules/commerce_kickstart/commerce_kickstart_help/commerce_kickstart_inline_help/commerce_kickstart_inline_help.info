@@ -5,9 +5,8 @@ package = Commerce Kickstart
 dependencies[] = advanced_help
 dependencies[] = commerce_kickstart_help
 
-; Information added by Drupal.org packaging script on 2018-03-28
-version = "7.x-2.53"
+; Information added by Drupal.org packaging script on 2018-04-25
+version = "7.x-2.54"
 core = "7.x"
 project = "commerce_kickstart"
-datestamp = "1522267649"
-
+datestamp = "1524675638"

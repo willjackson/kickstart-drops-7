@@ -9,8 +9,8 @@ projects[ctools][version] = 1.13
 projects[entity][version] = 1.9
 projects[entityreference][version] = 1.5
 projects[rules][version] = 2.10
-projects[views][version] = 3.18
-projects[views_bulk_operations][version] = 3.4
+projects[views][version] = 3.20
+projects[views_bulk_operations][version] = 3.5
 projects[addressfield][version] = 1.2
 projects[features][version] = 2.10
 projects[features][patch][2143765] = "http://drupal.org/files/issues/features-fix-modules-enabled-2143765-1.patch"
@@ -18,7 +18,7 @@ projects[features][patch][2479803] = "https://www.drupal.org/files/issues/ignore
 projects[features_override][version] = 2.0-rc3
 projects[strongarm][version] = 2.0
 projects[taxonomy_menu][version] = 1.5
-projects[libraries][version] = 2.3
+projects[libraries][version] = 2.5
 projects[views_megarow][version] = 1.7
 
 ; Drupal Commerce and Commerce contribs.

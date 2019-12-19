@@ -761,9 +761,10 @@ function drupal_access_denied() {
  *   (optional) An array that can have one or more of the following elements:
  *   - headers: An array containing request headers to send as name/value pairs.
  *   - method: A string containing the request method. Defaults to 'GET'.
- *   - data: A string containing the request body, formatted as
- *     'param=value&param=value&...'; to generate this, use http_build_query().
- *     Defaults to NULL.
+ *   - data: An array containing the values for the request body or a string
+ *     containing the request body, formatted as
+ *     'param=value&param=value&...'; to generate this, use
+ *     drupal_http_build_query(). Defaults to NULL.
  *   - max_redirects: An integer representing how many times a redirect
  *     may be followed. Defaults to 3.
  *   - timeout: A float representing the maximum number of seconds the function
@@ -789,7 +790,7 @@ function drupal_access_denied() {
  *     easy access the array keys are returned in lower case.
  *   - data: A string containing the response body that was received.
  *
- * @see http_build_query()
+ * @see drupal_http_build_query()
  */
 function drupal_http_request($url, array $options = array()) {
   // Allow an alternate HTTP client library to replace Drupal's default
@@ -929,6 +930,11 @@ function drupal_http_request($url, array $options = array()) {
   $path = isset($uri['path']) ? $uri['path'] : '/';
   if (isset($uri['query'])) {
     $path .= '?' . $uri['query'];
+  }
+
+  // Convert array $options['data'] to query string.
+  if (is_array($options['data'])) {
+    $options['data'] = drupal_http_build_query($options['data']);
   }
 
   // Only add Content-Length if we actually have any content or if it is a POST
@@ -4451,19 +4457,6 @@ function drupal_get_js($scope = 'header', $javascript = NULL, $skip_alter = FALS
   // Sort the JavaScript so that it appears in the correct order.
   uasort($items, 'drupal_sort_css_js');
 
-  // In Drupal 8, there's a JS_SETTING group for making setting variables
-  // appear last after libraries have loaded. In Drupal 7, this is forced
-  // without that group. We do not use the $key => $item type of iteration,
-  // because PHP uses an internal array pointer for that, and we're modifying
-  // the array order inside the loop.
-  foreach (array_keys($items) as $key) {
-    if ($items[$key]['type'] == 'setting') {
-      $item = $items[$key];
-      unset($items[$key]);
-      $items[$key] = $item;
-    }
-  }
-
   // Provide the page with information about the individual JavaScript files
   // used, information not otherwise available when aggregation is enabled.
   $setting['ajaxPageState']['js'] = array_fill_keys(array_keys($items), 1);
@@ -4474,13 +4467,12 @@ function drupal_get_js($scope = 'header', $javascript = NULL, $skip_alter = FALS
   // that drupal_get_js() is running, so add the setting to this output as well
   // as to the drupal_add_js() cache. If $items['settings'] doesn't exist, it's
   // because drupal_get_js() was intentionally passed a $javascript argument
-  // stripped of settings, potentially in order to override how settings get
+  // stripped off settings, potentially in order to override how settings get
   // output, so in this case, do not add the setting to this output.
   if ($scope == 'header' && isset($items['settings'])) {
     $items['settings']['data'][] = $setting;
   }
 
-  // Render the HTML needed to load the JavaScript.
   $elements = array(
     '#type' => 'scripts',
     '#items' => $items,
@@ -4490,37 +4482,27 @@ function drupal_get_js($scope = 'header', $javascript = NULL, $skip_alter = FALS
 }
 
 /**
- * #pre_render callback to add the elements needed for JavaScript tags to be rendered.
+ * The #pre_render callback for the "scripts" element.
  *
- * This function evaluates the aggregation enabled/disabled condition on a group
- * by group basis by testing whether an aggregate file has been made for the
- * group rather than by testing the site-wide aggregation setting. This allows
- * this function to work correctly even if modules have implemented custom
- * logic for grouping and aggregating files.
+ * This callback adds elements needed for <script> tags to be rendered.
  *
- * @param $element
+ * @param array $elements
  *   A render array containing:
- *   - #items: The JavaScript items as returned by drupal_add_js() and
- *     altered by drupal_get_js().
- *   - #group_callback: A function to call to group #items. Following
- *     this function, #aggregate_callback is called to aggregate items within
- *     the same group into a single file.
- *   - #aggregate_callback: A function to call to aggregate the items within
- *     the groups arranged by the #group_callback function.
+ *   - '#items': The JS items as returned by drupal_add_js() and altered by
+ *     drupal_get_js().
  *
- * @return
- *   A render array that will render to a string of JavaScript tags.
+ * @return array
+ *   The $elements variable passed as argument with two more children keys:
+ *     - "scripts": contains the Javascript items
+ *     - "settings": contains the Javascript settings items.
+ *   If those keys are already existing, then the items will be appended and
+ *   their keys will be preserved.
  *
  * @see drupal_get_js()
+ * @see drupal_add_js()
  */
-function drupal_pre_render_scripts($elements) {
-  // Group and aggregate the items.
-  if (isset($elements['#group_callback'])) {
-    $elements['#groups'] = $elements['#group_callback']($elements['#items']);
-  }
-  if (isset($elements['#aggregate_callback'])) {
-    $elements['#aggregate_callback']($elements['#groups']);
-  }
+function drupal_pre_render_scripts(array $elements) {
+  $preprocess_js = (variable_get('preprocess_js', FALSE) && (!defined('MAINTENANCE_MODE') || MAINTENANCE_MODE != 'update'));
 
   // A dummy query-string is added to filenames, to gain control over
   // browser-caching. The string changes on every update or full cache
@@ -4540,8 +4522,20 @@ function drupal_pre_render_scripts($elements) {
   // third-party code might require the use of a different query string.
   $js_version_string = variable_get('drupal_js_version_query_string', 'v=');
 
-  // Defaults for each SCRIPT element.
-  $element_defaults = array(
+  $files = array();
+
+  $scripts = isset($elements['scripts']) ? $elements['scripts'] : array();
+  $scripts += array('#weight' => 0);
+
+  $settings = isset($elements['settings']) ? $elements['settings'] : array();
+  $settings += array('#weight' => $scripts['#weight'] + 10);
+
+  // The index counter is used to keep aggregated and non-aggregated files in
+  // order by weight. Use existing scripts count as a starting point.
+  $index = count(element_children($scripts)) + 1;
+
+  // Loop through the JavaScript to construct the rendered output.
+  $element = array(
     '#type' => 'html_tag',
     '#tag' => 'script',
     '#value' => '',
@@ -4550,27 +4544,17 @@ function drupal_pre_render_scripts($elements) {
     ),
   );
 
-  // Loop through each group.
-  foreach ($elements['#groups'] as $group) {
-    // If a group of files has been aggregated into a single file,
-    // $group['data'] contains the URI of the aggregate file. Add a single
-    // script element for this file.
-    if ($group['type'] == 'file' && isset($group['data'])) {
-      $element = $element_defaults;
-      $element['#attributes']['src'] = file_create_url($group['data']);
-      $element['#browsers'] = $group['browsers'];
-      $elements[] = $element;
-    }
-    // For non-file types, and non-aggregated files, add a script element per
-    // item.
-    else {
-      foreach ($group['items'] as $item) {
-        // Element properties that do not depend on item type.
-        $element = $element_defaults;
-        if (!empty($item['defer'])) {
-          $element['#attributes']['defer'] = 'defer';
-        }
-        $element['#browsers'] = $item['browsers'];
+  foreach ($elements['#items'] as $item) {
+    $query_string =  empty($item['version']) ? $default_query_string : $js_version_string . $item['version'];
+
+    switch ($item['type']) {
+      case 'setting':
+        $js_element = $element;
+        $js_element['#value_prefix'] = $embed_prefix;
+        $js_element['#value'] = 'jQuery.extend(Drupal.settings, ' . drupal_json_encode(drupal_array_merge_deep_array($item['data'])) . ");";
+        $js_element['#value_suffix'] = $embed_suffix;
+        $settings[] = $js_element;
+        break;
 
         // Element properties that depend on item type.
         switch ($item['type']) {
@@ -4596,6 +4580,11 @@ function drupal_pre_render_scripts($elements) {
             $element['#attributes']['src'] = $item['data'];
             break;
         }
+        $js_element['#value_prefix'] = $embed_prefix;
+        $js_element['#value'] = $item['data'];
+        $js_element['#value_suffix'] = $embed_suffix;
+        $scripts[$index++] = $js_element;
+        break;
 
         $elements[] = $element;
       }
@@ -4653,18 +4642,37 @@ function drupal_group_js($javascript) {
 
     switch ($item['type']) {
       case 'file':
-        // Group file items if their 'preprocess' flag is TRUE.
-        // Help ensure maximum reuse of aggregate files by only grouping
-        // together items that share the same 'group' value and 'every_page'
-        // flag. See drupal_add_js() for details about that.
-        $group_keys = $item['preprocess'] ? array($item['type'], $item['group'], $item['every_page'], $item['browsers']) : FALSE;
+        $js_element = $element;
+        if (!$item['preprocess'] || !$preprocess_js) {
+          if ($item['defer']) {
+            $js_element['#attributes']['defer'] = 'defer';
+          }
+          $query_string_separator = (strpos($item['data'], '?') !== FALSE) ? '&' : '?';
+          $js_element['#attributes']['src'] = file_create_url($item['data']) . $query_string_separator . ($item['cache'] ? $query_string : REQUEST_TIME);
+          $scripts[$index++] = $js_element;
+        }
+        else {
+          // By increasing the index for each aggregated file, we maintain
+          // the relative ordering of JS by weight. We also set the key such
+          // that groups are split by items sharing the same 'group' value and
+          // 'every_page' flag. While this potentially results in more aggregate
+          // files, it helps make each one more reusable across a site visit,
+          // leading to better front-end performance of a website as a whole.
+          // See drupal_add_js() for details.
+          $key = 'aggregate_' . $item['group'] . '_' . $item['every_page'] . '_' . $index;
+          $scripts[$key] = '';
+          $files[$key][$item['data']] = $item;
+        }
         break;
 
       case 'external':
-      case 'setting':
-      case 'inline':
-        // Do not group external, settings, and inline items.
-        $group_keys = FALSE;
+        $js_element = $element;
+        // Preprocessing for external JavaScript files is ignored.
+        if ($item['defer']) {
+          $js_element['#attributes']['defer'] = 'defer';
+        }
+        $js_element['#attributes']['src'] = $item['data'];
+        $scripts[$index++] = $js_element;
         break;
     }
 
@@ -4685,37 +4693,28 @@ function drupal_group_js($javascript) {
     $groups[$index]['items'][] = $item;
   }
 
-  return $groups;
-}
-
-/**
- * Default callback to aggregate JavaScript files.
- *
- * Having the browser load fewer JavaScript files results in much faster page
- * loads than when it loads many small files. This function aggregates files
- * within the same group into a single file unless the site-wide setting to do
- * so is disabled (commonly the case during site development). To optimize
- * download, it also compresses the aggregate files by removing comments,
- * whitespace, and other unnecessary content.
- *
- * @param $js_groups
- *   An array of JavaScript groups as returned by drupal_group_js(). For each
- *   group that is aggregated, this function sets the value of the group's
- *   'data' key to the URI of the aggregate file.
- *
- * @see drupal_group_js()
- * @see drupal_pre_render_scripts()
- */
-function drupal_aggregate_js(&$js_groups) {
-  // Only aggregate when the site is configured to do so, and not during an
-  // update.
-  if (variable_get('preprocess_js', FALSE) && (!defined('MAINTENANCE_MODE') || MAINTENANCE_MODE != 'update')) {
-    foreach ($js_groups as $key => $group) {
-      if ($group['type'] == 'file' && $group['preprocess']) {
-        $js_groups[$key]['data'] = drupal_build_js_cache($group['items']);
+  // Aggregate any remaining JS files that haven't already been output.
+  if ($preprocess_js && count($files) > 0) {
+    foreach ($files as $key => $file_set) {
+      $uri = drupal_build_js_cache($file_set);
+      // Only include the file if was written successfully. Errors are logged
+      // using watchdog.
+      if ($uri) {
+        $preprocess_file = file_create_url($uri);
+        $js_element = $element;
+        $js_element['#attributes']['src'] = $preprocess_file;
+        $scripts[$key] = $js_element;
       }
     }
   }
+
+  // Keep the order of JS files consistent as some are preprocessed and others
+  // are not. Make sure any inline or JS setting variables appear last after
+  // libraries have loaded.
+  $element['scripts'] = $scripts;
+  $element['settings'] = $settings;
+
+  return $element;
 }
 
 /**
@@ -7114,7 +7113,16 @@ function drupal_common_theme() {
       'variables' => array(),
     ),
     'table' => array(
-      'variables' => array('header' => NULL, 'rows' => NULL, 'attributes' => array(), 'caption' => NULL, 'colgroups' => array(), 'sticky' => TRUE, 'empty' => ''),
+      'variables' => array(
+        'header' => NULL,
+        'footer' => NULL,
+        'rows' => NULL,
+        'attributes' => array(),
+        'caption' => NULL,
+        'colgroups' => array(),
+        'sticky' => TRUE,
+        'empty' => '',
+      ),
     ),
     'tablesort_indicator' => array(
       'variables' => array('style' => NULL),

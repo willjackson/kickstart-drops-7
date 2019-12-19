@@ -70,8 +70,7 @@ define('CSS_DEFAULT', 0);
 define('CSS_THEME', 100);
 
 /**
- * The default group for JavaScript libraries or jQuery plugins added to the
- * page.
+ * The default group for JavaScript and jQuery libraries added to the page.
  */
 define('JS_LIBRARY', -100);
 
@@ -4261,9 +4260,6 @@ function drupal_region_class($region) {
  *     a JavaScript file. Defaults to TRUE.
  *   - preprocess: If TRUE and JavaScript aggregation is enabled, the script
  *     file will be aggregated. Defaults to TRUE.
- *   - browsers: An array containing information specifying which browsers
- *     should load the JavaScript item. See
- *     drupal_pre_render_conditional_comments() for details.
  *
  * @return
  *   The current array of JavaScript files, settings, and in-line code,
@@ -4327,7 +4323,6 @@ function drupal_add_js($data = NULL, $options = NULL) {
           'group' => JS_LIBRARY,
           'every_page' => TRUE,
           'weight' => 0,
-          'browsers' => array(),
         ),
         'misc/drupal.js' => array(
           'data' => 'misc/drupal.js',
@@ -4340,7 +4335,6 @@ function drupal_add_js($data = NULL, $options = NULL) {
           'preprocess' => TRUE,
           'cache' => TRUE,
           'defer' => FALSE,
-          'browsers' => array(),
         ),
       );
       $javascript = drupal_array_merge_deep($javascript, $default_javascript);
@@ -4391,7 +4385,6 @@ function drupal_js_defaults($data = NULL) {
     'preprocess' => TRUE,
     'version' => NULL,
     'data' => $data,
-    'browsers' => array(),
   );
 }
 
@@ -4556,29 +4549,10 @@ function drupal_pre_render_scripts(array $elements) {
         $settings[] = $js_element;
         break;
 
-        // Element properties that depend on item type.
-        switch ($item['type']) {
-          case 'setting':
-            $element['#value_prefix'] = $embed_prefix;
-            $element['#value'] = 'jQuery.extend(Drupal.settings, ' . drupal_json_encode(drupal_array_merge_deep_array($item['data'])) . ");";
-            $element['#value_suffix'] = $embed_suffix;
-            break;
-
-          case 'inline':
-            $element['#value_prefix'] = $embed_prefix;
-            $element['#value'] = $item['data'];
-            $element['#value_suffix'] = $embed_suffix;
-            break;
-
-          case 'file':
-            $query_string = empty($item['version']) ? $default_query_string : $js_version_string . $item['version'];
-            $query_string_separator = (strpos($item['data'], '?') !== FALSE) ? '&' : '?';
-            $element['#attributes']['src'] = file_create_url($item['data']) . $query_string_separator . ($item['cache'] ? $query_string : REQUEST_TIME);
-            break;
-
-          case 'external':
-            $element['#attributes']['src'] = $item['data'];
-            break;
+      case 'inline':
+        $js_element = $element;
+        if ($item['defer']) {
+          $js_element['#attributes']['defer'] = 'defer';
         }
         $js_element['#value_prefix'] = $embed_prefix;
         $js_element['#value'] = $item['data'];
@@ -4586,61 +4560,6 @@ function drupal_pre_render_scripts(array $elements) {
         $scripts[$index++] = $js_element;
         break;
 
-        $elements[] = $element;
-      }
-    }
-  }
-
-  return $elements;
-}
-
-/**
- * Default callback to group JavaScript items.
- *
- * This function arranges the JavaScript items that are in the #items property
- * of the scripts element into groups. When aggregation is enabled, files within
- * a group are aggregated into a single file, significantly improving page
- * loading performance by minimizing network traffic overhead.
- *
- * This function puts multiple items into the same group if they are groupable
- * and if they are for the same browsers. Items of the 'file' type are groupable
- * if their 'preprocess' flag is TRUE. Items of the 'inline', 'settings', or
- * 'external' type are not groupable.
- *
- * This function also ensures that the process of grouping items does not change
- * their relative order. This requirement may result in multiple groups for the
- * same type and browsers, if needed to accommodate other items in
- * between.
- *
- * @param $javascript
- *   An array of JavaScript items, as returned by drupal_add_js(), but after
- *   alteration performed by drupal_get_js().
- *
- * @return
- *   An array of JavaScript groups. Each group contains the same keys (e.g.,
- *   'data', etc.) as a JavaScript item from the $javascript parameter, with the
- *   value of each key applying to the group as a whole. Each group also
- *   contains an 'items' key, which is the subset of items from $javascript that
- *   are in the group.
- *
- * @see drupal_pre_render_scripts()
- */
-function drupal_group_js($javascript) {
-  $groups = array();
-  // If a group can contain multiple items, we track the information that must
-  // be the same for each item in the group, so that when we iterate the next
-  // item, we can determine if it can be put into the current group, or if a
-  // new group needs to be made for it.
-  $current_group_keys = NULL;
-  $index = -1;
-  foreach ($javascript as $item) {
-    // The browsers for which the JavaScript item needs to be loaded is part of
-    // the information that determines when a new group is needed, but the order
-    // of keys in the array doesn't matter, and we don't want a new group if all
-    // that's different is that order.
-    ksort($item['browsers']);
-
-    switch ($item['type']) {
       case 'file':
         $js_element = $element;
         if (!$item['preprocess'] || !$preprocess_js) {
@@ -4675,22 +4594,6 @@ function drupal_group_js($javascript) {
         $scripts[$index++] = $js_element;
         break;
     }
-
-    // If the group keys don't match the most recent group we're working with,
-    // then a new group must be made.
-    if ($group_keys !== $current_group_keys) {
-      $index++;
-      // Initialize the new group with the same properties as the first item
-      // being placed into it. The item's 'data' and 'weight' properties are
-      // unique to the item and should not be carried over to the group.
-      $groups[$index] = $item;
-      unset($groups[$index]['data'], $groups[$index]['weight']);
-      $groups[$index]['items'] = array();
-      $current_group_keys = $group_keys ? $group_keys : NULL;
-    }
-
-    // Add the item to the current group.
-    $groups[$index]['items'][] = $item;
   }
 
   // Aggregate any remaining JS files that haven't already been output.
@@ -5267,10 +5170,10 @@ function drupal_build_js_cache($files) {
 
   if (empty($uri) || !drupal_aggregated_file_exists($uri)) {
     // Build aggregate JS file.
-    foreach ($files as $info) {
+    foreach ($files as $path => $info) {
       if ($info['preprocess']) {
         // Append a ';' and a newline after each JS file to prevent them from running together.
-        $contents .= file_get_contents($info['data']) . ";\n";
+        $contents .= file_get_contents($path) . ";\n";
       }
     }
 
@@ -8363,7 +8266,10 @@ function entity_uri($entity_type, $entity) {
   else {
     return NULL;
   }
-  if ($uri = $uri_callback($entity)) {
+
+  // Invoke the callback to get the URI. If there is no callback, return NULL.
+  if (isset($uri_callback) && function_exists($uri_callback)) {
+    $uri = $uri_callback($entity);
     // Pass the entity data to url() so that alter functions do not need to
     // lookup this entity again.
     $uri['options']['entity_type'] = $entity_type;
